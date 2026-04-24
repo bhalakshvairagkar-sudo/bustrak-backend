@@ -2,12 +2,11 @@ const express  = require('express');
 const router   = express.Router();
 const Location = require('../models/Location');
 
-// Predefined route waypoints for BUS_001 (lat/lng pairs)
 const ROUTE_WAYPOINTS = {
   BUS_001: [
-    { lat: 18.5204, lng: 73.8567 }, // Pune Station
-    { lat: 18.5308, lng: 73.8474 }, // FC Road
-    { lat: 18.5626, lng: 73.8169 }, // Hinjewadi Phase 1
+    { lat: 18.5204, lng: 73.8567 },
+    { lat: 18.5308, lng: 73.8474 },
+    { lat: 18.5626, lng: 73.8169 },
   ]
 };
 
@@ -15,11 +14,9 @@ const ROUTE_WAYPOINTS = {
 router.post('/gps', async (req, res) => {
   try {
     const { bus_id, timestamp, latitude, longitude, speed } = req.body;
-
     if (!bus_id || !latitude || !longitude) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
-
     const location = new Location({
       bus_id,
       timestamp: new Date(timestamp),
@@ -27,17 +24,15 @@ router.post('/gps', async (req, res) => {
       longitude,
       speed: speed || 0
     });
-
     await location.save();
     res.status(201).json({ status: 'ok' });
-
   } catch (err) {
     console.error('GPS save error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// GET /api/bus/:id/location — live location for dashboard
+// GET /api/bus/:id/location — single bus location
 router.get('/bus/:id/location', async (req, res) => {
   try {
     const latest = await Location
@@ -51,24 +46,58 @@ router.get('/bus/:id/location', async (req, res) => {
     const isDeviated = detectDeviation(latest, waypoints);
 
     res.json({
-      bus_id:    latest.bus_id,
-      latitude:  latest.latitude,
-      longitude: latest.longitude,
-      speed:     latest.speed,
-      timestamp: latest.timestamp,
+      bus_id:       latest.bus_id,
+      latitude:     latest.latitude,
+      longitude:    latest.longitude,
+      speed:        latest.speed,
+      timestamp:    latest.timestamp,
       eta_minutes:  eta,
       is_deviated:  isDeviated
     });
-
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// ─── Intelligence helpers ────────────────────────────────────────────
+// GET /api/buses — ALL active buses (updated in last 2 minutes)
+router.get('/buses', async (req, res) => {
+  try {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+
+    // Get latest location for each bus_id
+    const activeBuses = await Location.aggregate([
+      { $match: { timestamp: { $gte: twoMinutesAgo } } },
+      { $sort: { timestamp: -1 } },
+      { $group: {
+          _id: '$bus_id',
+          bus_id:    { $first: '$bus_id' },
+          latitude:  { $first: '$latitude' },
+          longitude: { $first: '$longitude' },
+          speed:     { $first: '$speed' },
+          timestamp: { $first: '$timestamp' }
+      }}
+    ]);
+
+    // Add ETA and deviation for each bus
+    const result = activeBuses.map(bus => {
+      const waypoints  = ROUTE_WAYPOINTS[bus.bus_id] || [];
+      return {
+        ...bus,
+        eta_minutes: calculateETA(bus, waypoints),
+        is_deviated: detectDeviation(bus, waypoints)
+      };
+    });
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ─── helpers ────────────────────────────────────────────
 
 function haversineDistance(lat1, lng1, lat2, lng2) {
-  const R = 6371;  // Earth radius in km
+  const R = 6371;
   const dLat = toRad(lat2 - lat1);
   const dLng = toRad(lng2 - lng1);
   const a = Math.sin(dLat/2) ** 2 +
@@ -81,27 +110,20 @@ function toRad(deg) { return deg * Math.PI / 180; }
 
 function calculateETA(location, waypoints) {
   if (!waypoints.length || location.speed < 1) return null;
-
-  // Find the next unvisited waypoint (closest ahead)
   const destination = waypoints[waypoints.length - 1];
   const distanceKm  = haversineDistance(
     location.latitude, location.longitude,
     destination.lat,   destination.lng
   );
-  const speedKmh  = location.speed;
-  const etaHours  = distanceKm / speedKmh;
-  return Math.round(etaHours * 60); // Return minutes
+  return Math.round((distanceKm / location.speed) * 60);
 }
 
 function detectDeviation(location, waypoints, thresholdKm = 0.15) {
   if (!waypoints.length) return false;
-
-  // Find minimum distance to any waypoint on the route
   const minDist = Math.min(...waypoints.map(wp =>
     haversineDistance(location.latitude, location.longitude, wp.lat, wp.lng)
   ));
-
-  return minDist > thresholdKm; // True if > 150m off route
+  return minDist > thresholdKm;
 }
 
 module.exports = router;
