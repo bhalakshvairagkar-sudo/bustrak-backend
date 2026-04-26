@@ -17,6 +17,7 @@ router.post('/gps', async (req, res) => {
     if (!bus_id || !latitude || !longitude) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
+
     const location = new Location({
       bus_id,
       timestamp:       new Date(timestamp),
@@ -26,6 +27,25 @@ router.post('/gps', async (req, res) => {
       passenger_count: passenger_count || 0
     });
     await location.save();
+
+    // ⚡ Emit to all connected dashboards instantly via WebSocket
+    const io = req.app.get('io');
+    if (io) {
+      const waypoints  = ROUTE_WAYPOINTS[bus_id] || [];
+      const eta        = calculateETA(location, waypoints);
+      const isDeviated = detectDeviation(location, waypoints);
+      io.emit('busUpdate', {
+        bus_id:          location.bus_id,
+        latitude:        location.latitude,
+        longitude:       location.longitude,
+        speed:           location.speed,
+        passenger_count: location.passenger_count || 0,
+        timestamp:       location.timestamp,
+        eta_minutes:     eta,
+        is_deviated:     isDeviated
+      });
+    }
+
     res.status(201).json({ status: 'ok' });
   } catch (err) {
     console.error('GPS save error:', err);
