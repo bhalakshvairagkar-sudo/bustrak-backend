@@ -13,16 +13,17 @@ const ROUTE_WAYPOINTS = {
 // POST /api/gps — receive location from Android app
 router.post('/gps', async (req, res) => {
   try {
-    const { bus_id, timestamp, latitude, longitude, speed } = req.body;
+    const { bus_id, timestamp, latitude, longitude, speed, passenger_count } = req.body;
     if (!bus_id || !latitude || !longitude) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
     const location = new Location({
       bus_id,
-      timestamp: new Date(timestamp),
+      timestamp:       new Date(timestamp),
       latitude,
       longitude,
-      speed: speed || 0
+      speed:           speed || 0,
+      passenger_count: passenger_count || 0
     });
     await location.save();
     res.status(201).json({ status: 'ok' });
@@ -46,13 +47,14 @@ router.get('/bus/:id/location', async (req, res) => {
     const isDeviated = detectDeviation(latest, waypoints);
 
     res.json({
-      bus_id:       latest.bus_id,
-      latitude:     latest.latitude,
-      longitude:    latest.longitude,
-      speed:        latest.speed,
-      timestamp:    latest.timestamp,
-      eta_minutes:  eta,
-      is_deviated:  isDeviated
+      bus_id:          latest.bus_id,
+      latitude:        latest.latitude,
+      longitude:       latest.longitude,
+      speed:           latest.speed,
+      passenger_count: latest.passenger_count || 0,
+      timestamp:       latest.timestamp,
+      eta_minutes:     eta,
+      is_deviated:     isDeviated
     });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -64,27 +66,27 @@ router.get('/buses', async (req, res) => {
   try {
     const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
 
-    // Get latest location for each bus_id
     const activeBuses = await Location.aggregate([
       { $match: { timestamp: { $gte: twoMinutesAgo } } },
       { $sort: { timestamp: -1 } },
       { $group: {
-          _id: '$bus_id',
-          bus_id:    { $first: '$bus_id' },
-          latitude:  { $first: '$latitude' },
-          longitude: { $first: '$longitude' },
-          speed:     { $first: '$speed' },
-          timestamp: { $first: '$timestamp' }
+          _id:             '$bus_id',
+          bus_id:          { $first: '$bus_id' },
+          latitude:        { $first: '$latitude' },
+          longitude:       { $first: '$longitude' },
+          speed:           { $first: '$speed' },
+          passenger_count: { $first: '$passenger_count' },
+          timestamp:       { $first: '$timestamp' }
       }}
     ]);
 
-    // Add ETA and deviation for each bus
     const result = activeBuses.map(bus => {
-      const waypoints  = ROUTE_WAYPOINTS[bus.bus_id] || [];
+      const waypoints = ROUTE_WAYPOINTS[bus.bus_id] || [];
       return {
         ...bus,
-        eta_minutes: calculateETA(bus, waypoints),
-        is_deviated: detectDeviation(bus, waypoints)
+        passenger_count: bus.passenger_count || 0,
+        eta_minutes:     calculateETA(bus, waypoints),
+        is_deviated:     detectDeviation(bus, waypoints)
       };
     });
 
@@ -94,7 +96,7 @@ router.get('/buses', async (req, res) => {
   }
 });
 
-// ─── helpers ────────────────────────────────────────────
+// ─── helpers ─────────────────────────────────────────────────────────
 
 function haversineDistance(lat1, lng1, lat2, lng2) {
   const R = 6371;
