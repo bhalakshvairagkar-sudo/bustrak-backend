@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const locationSchema = new mongoose.Schema({
-  city_id:         { type: String, required: true, index: true },
+  city_id:         { type: String, required: true, default: 'PUNE', index: true },
   bus_id:          { type: String, required: true, index: true },
   driver_id:       { type: String, default: '' },
   timestamp:       { type: Date, required: true },

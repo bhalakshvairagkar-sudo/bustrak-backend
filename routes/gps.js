@@ -13,33 +13,49 @@ const ROUTE_WAYPOINTS = {
 // POST /api/gps — receive location from Android app
 router.post('/gps', async (req, res) => {
   try {
-    const { bus_id, timestamp, latitude, longitude, speed, passenger_count } = req.body;
+    const {
+      bus_id,
+      timestamp,
+      latitude,
+      longitude,
+      speed,
+      passenger_count,
+      city_id,
+      driver_id
+    } = req.body;
+
     if (!bus_id || !latitude || !longitude) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
     const location = new Location({
+      city_id:         (city_id || 'PUNE').toUpperCase(),
       bus_id,
-      timestamp:       new Date(timestamp),
+      driver_id:       driver_id || '',
+      timestamp:       timestamp ? new Date(timestamp) : new Date(),
       latitude,
       longitude,
       speed:           speed || 0,
       passenger_count: passenger_count || 0
     });
+
     await location.save();
 
-    // ⚡ Emit to all connected dashboards instantly via WebSocket
+    // Emit to all connected dashboards instantly
     const io = req.app.get('io');
     if (io) {
       const waypoints  = ROUTE_WAYPOINTS[bus_id] || [];
       const eta        = calculateETA(location, waypoints);
       const isDeviated = detectDeviation(location, waypoints);
+
       io.emit('busUpdate', {
+        city_id:         location.city_id,
         bus_id:          location.bus_id,
+        driver_id:       location.driver_id,
         latitude:        location.latitude,
         longitude:       location.longitude,
         speed:           location.speed,
-        passenger_count: location.passenger_count || 0,
+        passenger_count: location.passenger_count,
         timestamp:       location.timestamp,
         eta_minutes:     eta,
         is_deviated:     isDeviated
@@ -48,16 +64,18 @@ router.post('/gps', async (req, res) => {
 
     res.status(201).json({ status: 'ok' });
   } catch (err) {
-    console.error('GPS save error:', err);
-    res.status(500).json({ error: 'Server error' });
+    console.error('GPS save error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/bus/:id/location — single bus location
+// GET /api/bus/:id/location — latest location of a single bus
 router.get('/bus/:id/location', async (req, res) => {
   try {
+    const city_id = (req.query.city_id || 'PUNE').toUpperCase();
+
     const latest = await Location
-      .findOne({ bus_id: req.params.id })
+      .findOne({ bus_id: req.params.id, city_id })
       .sort({ timestamp: -1 });
 
     if (!latest) return res.status(404).json({ error: 'Bus not found' });
@@ -67,44 +85,63 @@ router.get('/bus/:id/location', async (req, res) => {
     const isDeviated = detectDeviation(latest, waypoints);
 
     res.json({
+      city_id:         latest.city_id,
       bus_id:          latest.bus_id,
+      driver_id:       latest.driver_id,
       latitude:        latest.latitude,
       longitude:       latest.longitude,
       speed:           latest.speed,
-      passenger_count: latest.passenger_count || 0,
+      passenger_count: latest.passenger_count,
       timestamp:       latest.timestamp,
       eta_minutes:     eta,
       is_deviated:     isDeviated
     });
   } catch (err) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Bus location error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/buses — ALL active buses (updated in last 2 minutes)
+// GET /api/buses — all active buses updated in last 2 minutes
 router.get('/buses', async (req, res) => {
   try {
+    const city_id       = (req.query.city_id || 'PUNE').toUpperCase();
     const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
 
     const activeBuses = await Location.aggregate([
-      { $match: { timestamp: { $gte: twoMinutesAgo } } },
+      {
+        $match: {
+          city_id,
+          timestamp: { $gte: twoMinutesAgo }
+        }
+      },
       { $sort: { timestamp: -1 } },
-      { $group: {
+      {
+        $group: {
           _id:             '$bus_id',
+          city_id:         { $first: '$city_id' },
           bus_id:          { $first: '$bus_id' },
+          driver_id:       { $first: '$driver_id' },
           latitude:        { $first: '$latitude' },
           longitude:       { $first: '$longitude' },
           speed:           { $first: '$speed' },
           passenger_count: { $first: '$passenger_count' },
           timestamp:       { $first: '$timestamp' }
-      }}
+        }
+      }
     ]);
 
     const result = activeBuses.map(bus => {
       const waypoints = ROUTE_WAYPOINTS[bus.bus_id] || [];
       return {
-        ...bus,
-        passenger_count: bus.passenger_count || 0,
+        city_id:         bus.city_id,
+        bus_id:          bus.bus_id,
+        driver_id:       bus.driver_id,
+        latitude:        bus.latitude,
+        longitude:       bus.longitude,
+        speed:           bus.speed,
+        passenger_count: bus.passenger_count,
+        timestamp:       bus.timestamp,
         eta_minutes:     calculateETA(bus, waypoints),
         is_deviated:     detectDeviation(bus, waypoints)
       };
@@ -112,23 +149,26 @@ router.get('/buses', async (req, res) => {
 
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Buses fetch error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ─── helpers ─────────────────────────────────────────────────────────
+// ─── helpers ──────────────────────────────────────────────────
 
 function haversineDistance(lat1, lng1, lat2, lng2) {
-  const R = 6371;
+  const R    = 6371;
   const dLat = toRad(lat2 - lat1);
   const dLng = toRad(lng2 - lng1);
-  const a = Math.sin(dLat/2) ** 2 +
-            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-            Math.sin(dLng/2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  const a    = Math.sin(dLat / 2) ** 2 +
+               Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+               Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function toRad(deg) { return deg * Math.PI / 180; }
+function toRad(deg) {
+  return deg * Math.PI / 180;
+}
 
 function calculateETA(location, waypoints) {
   if (!waypoints.length || location.speed < 1) return null;
