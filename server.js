@@ -10,6 +10,7 @@ const gpsRoutes    = require('./routes/gps');
 const authRoutes   = require('./routes/auth');
 const cityRoutes   = require('./routes/cities');
 const driverRoutes = require('./routes/drivers');
+const passengerRoute = require('./routes/passengerRoute');
 
 const app    = express();
 const server = http.createServer(app);
@@ -36,6 +37,7 @@ app.use('/api',         gpsRoutes);
 app.use('/api/auth',    authRoutes);
 app.use('/api/cities',  cityRoutes);
 app.use('/api/drivers', driverRoutes);
+app.use('/api', passengerRoute);
 
 app.get('/health', (req, res) =>
   res.json({ status: 'ok', timestamp: new Date() })
